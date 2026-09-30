@@ -1,8 +1,12 @@
 @echo off
-echo RDP CREATION SUCCESSFULL!
-tasklist | find /i "ngrok.exe" >Nul && goto check || echo "Unable to get NGROK tunnel, make sure NGROK_AUTH_TOKEN is correct in Settings > Secrets > Repository secret. Maybe your previous VM is still running: https://dashboard.ngrok.com/status/tunnels" & ping 127.0.0.1 >Nul & exit
 :check
-ping 127.0.0.1 > null
 cls
-echo RDP CREATION SUCCESSFULL!
+echo RDP CONNECTION STATUS
+echo =====================
+tailscale status
+echo.
+echo RDP address:
+powershell -NoProfile -Command "$ip=(tailscale ip -4 2>$null | Select-Object -First 1).Trim(); if($ip){Write-Host ($ip + ':3389')}else{Write-Host 'Tailscale IP not available'}"
+echo.
+timeout /t 15 /nobreak >nul
 goto check
