@@ -1,0 +1,61 @@
+name: RDP - Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Enable Remote Desktop
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
+
+      - name: Configure RDP account
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) { throw 'Missing RDP_PASSWORD repository secret.' }
+          $secure = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          $user = Get-LocalUser -Name 'runneradmin' -ErrorAction SilentlyContinue
+          if ($null -eq $user) { New-LocalUser -Name 'runneradmin' -Password $secure -AccountNeverExpires -PasswordNeverExpires } else { Set-LocalUser -Name 'runneradmin' -Password $secure }
+          Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue
+
+      - name: Connect runner to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          version: latest
+
+      - name: Verify RDP and show Tailscale address
+        shell: pwsh
+        run: |
+          for ($i = 0; $i -lt 12; $i++) {
+            $test = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue
+            $ip = (tailscale ip -4 2>$null | Select-Object -First 1).Trim()
+            if ($test.TcpTestSucceeded -and $ip -match '^100\.') {
+              "## RDP connection" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+              "Address: $ip`:3389" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+              "Username: runneradmin" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+              "Password: the value of the RDP_PASSWORD repository secret" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+              Write-Host "Tailscale IPv4: $ip"
+              break
+            }
+            if ($i -eq 11) { tailscale status; Test-NetConnection -ComputerName 127.0.0.1 -Port 3389; throw 'Could not verify the Tailscale address and RDP listener.' }
+            Start-Sleep -Seconds 5
+          }
+
+      - name: Keep runner alive
+        shell: pwsh
+        run: |
+          $end = (Get-Date).AddMinutes(335)
+          while ((Get-Date) -lt $end) {
+            if (-not (Get-Process tailscaled -ErrorAction SilentlyContinue)) { throw 'Tailscale stopped.' }
+            Start-Sleep -Seconds 60
+          }
